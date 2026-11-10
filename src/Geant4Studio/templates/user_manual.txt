@@ -1,0 +1,113 @@
+GEANT4 STUDIO — USER MANUAL
+========================================
+
+1. CREATING A PROJECT
+---------------------
+Click New Project and choose a directory and project name.
+The application creates a basic Geant4 simulation project.
+
+Project files:
+- CMakeLists.txt — build configuration
+- src/main.cc — main C++ simulation code
+- macros/vis.mac — visualization settings
+- macros/run.mac — example run commands
+- scripts/build.sh — build script
+- scripts/run.sh — run script
+
+2. OPENING AND EDITING
+----------------------
+Click Open Project to open an existing project.
+
+Select a source file in the file tree to edit it.
+Use Save to write your changes to disk.
+
+In main.cc, look for the markers:
+
+    // USER CODE BEGIN
+    // USER CODE END
+
+These mark a place intended for your own code.
+
+3. BUILD
+--------
+Click Build to configure and compile the project.
+If compilation fails, inspect the Output panel.
+The first compiler error is often the most useful one.
+
+4. RUN
+------
+Click Run to launch the compiled simulation.
+The visualization window may open separately.
+
+5. STOP
+-------
+Click Stop to request that the running process stops.
+
+6. GEANT4 AND PYTHIA 8
+----------------------
+Geant4 simulates how particles travel through matter
+and interact with detector materials.
+
+PYTHIA 8 generates particle-collision events.
+It is a separate library, not a replacement for Geant4.
+
+Linking PYTHIA alone does not generate events.
+Your C++ code must initialize PYTHIA, generate events,
+and pass suitable particles into Geant4.
+
+
+7. VISUAL PROJECT CONFIGURATION
+-------------------------------
+Visual Project Configuration is a simple, intuitive tool for building Pythia & Geant4 simulations.
+
+7.1 BEAMS CARD
+--------------
+In the Beams card, you can configure type and positions of the beams.
+- It's highly recommended to use the Separate gun positions mode to create two separate beams.
+- Frame 1 - eCM - more energy = more new particles
+- Frame 2 - beam momentum vectors - when sum of all BMV isn't 0, new particles will be oriented
+- Frame 3 - gun positions
+
+7.2 POSITION CARD
+-----------------
+In the Position card, you can set
+- if you want a custom interaction point (default is [0,0,0])
+- set the position of the custom interaction point
+- set the Gaussian spread
+
+7.3 PROCESSES CARD
+------------------
+In the Processes card, you can set which processes you want to run.
+- Soft QCD - low energy hadron-hadron collisions
+- Hard QCD - high energy hadron-hadron / hadron-lepton collisions
+- DIS - gamma* or Z0 exchange for lepton-hadron / lepton-lepton collisions
+- gamma* or Z0 production - fermion-antifermion interaction creating Z0 or gamma
+- W production - fermion-antifermion interaction creating W+/W- boson
+
+7.4 SHOWERS CARD
+----------------
+In the Showers card, you can set
+
+8. TROUBLESHOOTING
+------------------
+Build fails:
+- Read the Output panel.
+- Check the Geant4 installation and CMakeLists.txt.
+
+Run does nothing:
+- Build the project first.
+- Check that the executable exists in build/.
+
+PYTHIA data error:
+- Check the PYTHIA8DATA environment variable.
+- Verify that the XML data directory exists.
+
+PYTHIA runtime error (-6) or -11
+- check the Processes card in Visual project configuration
+
+9. IMPORTANT
+------------
+Save your work before building or running.
+Keep a backup before major changes.
+The generated project is a starting point, not a
+complete detector simulation.

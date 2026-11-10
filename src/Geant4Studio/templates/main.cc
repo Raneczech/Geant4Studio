@@ -1,0 +1,272 @@
+#include "G4RunManager.hh"
+#include "G4VUserDetectorConstruction.hh"
+#include "G4VUserActionInitialization.hh"
+#include "G4VUserPrimaryGeneratorAction.hh"
+#include "G4NistManager.hh"
+#include "G4Box.hh"
+#include "G4LogicalVolume.hh"
+#include "G4PVPlacement.hh"
+#include "G4SystemOfUnits.hh"
+#include "G4PhysicalConstants.hh"
+#include "G4ThreeVector.hh"
+#include "G4ParticleGun.hh"
+#include "G4ParticleTable.hh"
+#include "G4ParticleDefinition.hh"
+#include "G4Event.hh"
+#include "FTFP_BERT.hh"
+#include "G4VisExecutive.hh"
+#include "G4UIExecutive.hh"
+#include "G4UImanager.hh"
+
+#include "Pythia8/Pythia.h"
+
+#include "Pythia8/BeamShape.h"
+
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <memory>
+
+// ============================================================
+// DETECTOR
+// ============================================================
+
+class Detector : public G4VUserDetectorConstruction {
+public:
+    G4VPhysicalVolume* Construct() override {
+        auto* material =
+            G4NistManager::Instance()->FindOrBuildMaterial("G4_Galactic");
+
+        auto* solid = new G4Box(
+            "World",
+            1.0 * m,
+            1.0 * m,
+            1.0 * m
+        );
+
+        auto* logical =
+            new G4LogicalVolume(solid, material, "World");
+
+        return new G4PVPlacement(
+            nullptr,
+            G4ThreeVector(),
+            logical,
+            "World",
+            nullptr,
+            false,
+            0,
+            true
+        );
+    }
+};
+
+// ============================================================
+// PRIMARY GENERATOR: PYTHIA 8 -> GEANT4
+// ============================================================
+
+class PrimaryGenerator : public G4VUserPrimaryGeneratorAction {
+private:
+    std::unique_ptr<Pythia8::Pythia> pythia;
+    G4ParticleGun* gun;
+    const bool beamBEnabled = __BEAM_B_ENABLED__;
+
+public:
+    PrimaryGenerator()
+        : gun(new G4ParticleGun(1)) {
+
+        if (beamBEnabled) {
+            pythia = std::make_unique<Pythia8::Pythia>();
+
+            const std::vector<std::string> pythiaSettings = {
+                __PYTHIA_SETTINGS__
+            };
+
+            for (const auto& setting : pythiaSettings) {
+                if (!pythia->readString(setting)) {
+                    delete gun;
+                    gun = nullptr;
+                    throw std::runtime_error(
+                        "PYTHIA rejected setting: " + setting
+                    );
+                }
+            }
+
+            if (!pythia->init()) {
+                delete gun;
+                gun = nullptr;
+                throw std::runtime_error(
+                    "PYTHIA initialization failed. "
+                    "Check the settings and beam configuration."
+                );
+            }
+
+            G4cout << "PYTHIA 8 initialized." << G4endl;
+        } else {
+            G4cout << "Decay mode: PYTHIA is disabled." << G4endl;
+        }
+    }
+
+    ~PrimaryGenerator() override {
+        delete gun;
+    }
+
+    void GeneratePrimaries(G4Event* event) override {
+        if (!beamBEnabled) {
+            auto* particleTable = G4ParticleTable::GetParticleTable();
+            auto* definition = particleTable->FindParticle(
+                __DECAY_PARTICLE_ID__
+            );
+
+            if (definition == nullptr) {
+                throw std::runtime_error(
+                    "Geant4 does not know the selected Beam A PDG particle."
+                );
+            }
+
+            const G4ThreeVector momentum(
+                __DECAY_MOMENTUM_X__ * GeV,
+                __DECAY_MOMENTUM_Y__ * GeV,
+                __DECAY_MOMENTUM_Z__ * GeV
+            );
+
+            const G4double p = momentum.mag();
+            if (p <= 1.e-12 * GeV) {
+                throw std::runtime_error(
+                    "Beam A momentum must be non-zero."
+                );
+            }
+
+            const G4double mass = definition->GetPDGMass();
+            const G4double totalEnergy = std::sqrt(p * p + mass * mass);
+            const G4double kineticEnergy = totalEnergy - mass;
+
+            gun->SetParticleDefinition(definition);
+            gun->SetParticlePosition(G4ThreeVector(
+                __DECAY_POSITION_X__ * mm,
+                __DECAY_POSITION_Y__ * mm,
+                __DECAY_POSITION_Z__ * mm
+            ));
+            gun->SetParticleMomentumDirection(momentum.unit());
+            gun->SetParticleEnergy(kineticEnergy);
+            gun->GeneratePrimaryVertex(event);
+
+            G4cout << "Geant4 decay mode: primary PDG "
+                   << definition->GetPDGEncoding()
+                   << ", momentum " << p / GeV << " GeV"
+                   << G4endl;
+            return;
+        }
+
+        // Generate one PYTHIA collision for each Geant4 event.
+        if (!pythia->next()) {
+            G4cerr << "PYTHIA failed to generate an event." << G4endl;
+            return;
+        }
+
+        auto* particleTable = G4ParticleTable::GetParticleTable();
+        G4int inserted = 0;
+
+        // Transfer final-state PYTHIA particles to Geant4.
+        for (int i = 1; i < pythia->event.size(); ++i) {
+            const auto& particle = pythia->event[i];
+
+            if (!particle.isFinal()) {
+                continue;
+            }
+
+            // PYTHIA uses PDG particle IDs.
+            auto* definition = particleTable->FindParticle(particle.id());
+            if (definition == nullptr) {
+                continue;
+            }
+
+            const G4ThreeVector momentum(
+                particle.px() * GeV,
+                particle.py() * GeV,
+                particle.pz() * GeV
+            );
+
+            const G4double p = momentum.mag();
+            if (p <= 1.e-12 * GeV) {
+                continue;
+            }
+
+            // PYTHIA stores total energy and mass in GeV.
+            // ParticleGun::SetParticleEnergy expects kinetic energy.
+            const G4double mass = particle.m() * GeV;
+            const G4double totalEnergy = std::sqrt(p * p + mass * mass);
+            const G4double kineticEnergy = std::max(0.0, totalEnergy - mass);
+
+            // PYTHIA stores production coordinates in mm and production
+            // time in mm/c. Transfer them to the corresponding Geant4 vertex.
+            gun->SetParticleDefinition(definition);
+            gun->SetParticlePosition(G4ThreeVector(
+                particle.xProd() * mm,
+                particle.yProd() * mm,
+                particle.zProd() * mm
+            ));
+            gun->SetParticleTime(particle.tProd() * mm / c_light);
+            gun->SetParticleMomentumDirection(momentum.unit());
+            gun->SetParticleEnergy(kineticEnergy);
+            gun->GeneratePrimaryVertex(event);
+            ++inserted;
+        }
+
+        G4cout << "PYTHIA -> Geant4: " << inserted
+               << " primary particles" << G4endl;
+    }
+};
+
+// ============================================================
+// REGISTER GENERATOR
+// ============================================================
+
+class ActionInitialization : public G4VUserActionInitialization {
+public:
+    void Build() const override {
+        SetUserAction(new PrimaryGenerator());
+    }
+};
+
+// ============================================================
+// MAIN
+// ============================================================
+
+int main(int argc, char** argv) {
+    auto* runManager = new G4RunManager();
+
+    runManager->SetUserInitialization(new Detector());
+    runManager->SetUserInitialization(new FTFP_BERT());
+    runManager->SetUserInitialization(new ActionInitialization());
+    runManager->Initialize();
+
+    auto* visManager = new G4VisExecutive();
+    visManager->Initialize();
+
+    auto* uiManager = G4UImanager::GetUIpointer();
+
+    // USER CODE BEGIN
+__USER_CODE__
+    // USER CODE END
+
+    if (argc > 1) {
+        uiManager->ApplyCommand(
+            G4String("/control/execute ") + argv[1]
+        );
+    } else {
+        auto* ui = new G4UIExecutive(argc, argv);
+
+        uiManager->ApplyCommand(
+            "/control/execute macros/vis.mac"
+        );
+
+        ui->SessionStart();
+        delete ui;
+    }
+
+    delete visManager;
+    delete runManager;
+    return 0;
+}

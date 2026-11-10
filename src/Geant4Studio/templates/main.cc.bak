@@ -1,0 +1,357 @@
+#include "G4RunManager.hh"
+#include "G4VUserDetectorConstruction.hh"
+#include "G4VUserActionInitialization.hh"
+#include "G4VUserPrimaryGeneratorAction.hh"
+#include "G4NistManager.hh"
+#include "G4Box.hh"
+#include "G4LogicalVolume.hh"
+#include "G4PVPlacement.hh"
+#include "G4SystemOfUnits.hh"
+#include "G4ThreeVector.hh"
+#include "G4ParticleGun.hh"
+#include "G4ParticleTable.hh"
+#include "G4ParticleDefinition.hh"
+#include "G4Event.hh"
+#include "FTFP_BERT.hh"
+#include "G4VisExecutive.hh"
+#include "G4UIExecutive.hh"
+#include "G4UImanager.hh"
+
+#include "Pythia8/Pythia.h"
+
+#include <cmath>
+#include <algorithm>
+#include <stdexcept>
+
+// ============================================================
+// DETEKTOR / SVĚT GEANT4
+// ============================================================
+
+class Detector : public G4VUserDetectorConstruction {
+public:
+    G4VPhysicalVolume* Construct() override {
+        // Materiál světa. G4_Galactic je velmi řídké vakuum.
+        // V tomto výchozím projektu nejsou vloženy žádné vrstvy
+        // detektoru, terč ani magnetické pole.
+        auto* material =
+            G4NistManager::Instance()->FindOrBuildMaterial("G4_Galactic");
+
+        // Rozměry G4Box jsou POLOVIČNÍ délky v osách x, y, z.
+        // Hodnota 1 m tedy znamená celkové rozměry světa 2 x 2 x 2 m.
+        auto* solid = new G4Box(
+            "World",
+            1.0 * m,
+            1.0 * m,
+            1.0 * m
+        );
+
+        auto* logical =
+            new G4LogicalVolume(solid, material, "World");
+
+        // Svět je umístěn do počátku souřadnic, bez rotace.
+        return new G4PVPlacement(
+            nullptr,
+            G4ThreeVector(),
+            logical,
+            "World",
+            nullptr,
+            false,
+            0,
+            true
+        );
+    }
+};
+
+// ============================================================
+// GENERÁTOR ČÁSTIC: PYTHIA 8 -> GEANT4
+// ============================================================
+
+class PrimaryGenerator : public G4VUserPrimaryGeneratorAction {
+private:
+    Pythia8::Pythia pythia;
+    G4ParticleGun* gun;
+
+public:
+    PrimaryGenerator()
+        : gun(new G4ParticleGun(1)) {
+
+        // ====================================================
+        // 1) SVAZKY A ENERGIE SRÁŽKY
+        // ====================================================
+        // Beams:idA / Beams:idB jsou PDG kódy vstupních částic:
+        //   2212 = proton       -2212 = antiproton
+        //     11 = elektron       -11 = pozitron
+        //     13 = mion            -13 = antimion
+        //
+        // Beams:frameType = 1 znamená, že jsou svazky zadány
+        // v těžišťové soustavě (CM) a níže uvedená eCM je jejich
+        // celková energie v těžišťové soustavě, v GeV.
+        //
+        // AKTIVNÍ VÝCHOZÍ NASTAVENÍ: proton + proton při 14 TeV.
+        // Vyber právě jeden blok svazků. Pro jinou konfiguraci
+        // zakomentuj tyto aktivní řádky a odkomentuj alternativu.
+
+        pythia.readString("Beams:idA = 2212");
+        pythia.readString("Beams:idB = 2212");
+        pythia.readString("Beams:frameType = 1");
+        pythia.readString("Beams:eCM = 14000."); // 14000 GeV = 14 TeV
+
+        // ALTERNATIVA: elektron + pozitron při energii 91,1876 GeV.
+        // Při použití tohoto bloku musíš také vypnout SoftQCD níže
+        // a zvolit vhodný proces pro e+e-, například produkci gamma*/Z.
+        //
+        // pythia.readString("Beams:idA = 11");
+        // pythia.readString("Beams:idB = -11");
+        // pythia.readString("Beams:frameType = 1");
+        // pythia.readString("Beams:eCM = 91.1876");
+
+        // ====================================================
+        // 2) VÝBĚR FYZIKÁLNÍCH PROCESŮ
+        // ====================================================
+        // PYTHIA musí vědět, jaké procesy smí generovat.
+        // Není to seznam konkrétních částic, které se mají objevit;
+        // každá událost se následně náhodně vygeneruje podle modelů
+        // a pravděpodobností daných vybraným procesem.
+        //
+        // AKTIVNÍ VOLBA: všechny procesy skupiny SoftQCD.
+        // U proton-protonových srážek zahrnuje např. ne-difrakční,
+        // elastické a difrakční měkké QCD procesy.
+        //
+        // Vyber jen jednu odpovídající skupinu procesů. Při změně
+        // zakomentuj aktivní řádek a odkomentuj jinou volbu.
+
+        pythia.readString("SoftQCD:all = on");
+
+        // Jen ne-difrakční SoftQCD procesy (často se používá jako
+        // přibližný minimum-bias vzorek):
+        // pythia.readString("SoftQCD:nonDiffractive = on");
+
+        // Tvrdé QCD procesy, například produkce vysokoenergetických
+        // kvarků a gluonů; obvykle vyžadují vhodnou energii srážky:
+        // pythia.readString("HardQCD:all = on");
+
+        // Ukázka pro elektron-pozitronový svazek: produkce gamma*/Z.
+        // Používej spolu s alternativním blokem e+e- výše a vypni
+        // aktivní SoftQCD:all. Při 91,1876 GeV se nacházíš u rezonance Z.
+        // pythia.readString("WeakSingleBoson:ffbar2gmZ = on");
+
+        // DALŠÍ PŘÍKLAD: pokud je vhodný pro tvou zvolenou energii
+        // a typ svazků, můžeš vybrat konkrétnější procesy z manuálu
+        // PYTHIA. Různé skupiny procesů nekombinuj bez rozmyslu:
+        // jejich současné zapnutí znamená, že PYTHIA může generovat
+        // události z více skupin.
+
+        // ====================================================
+        // 3) ROZPADY KONKRÉTNÍCH ČÁSTIC (VOLITELNÉ)
+        // ====================================================
+        // Ve výchozím stavu necháváme standardní tabulky rozpadů
+        // PYTHIA. Následující příklad je určen pro produkci Z/gamma*:
+        // nejprve vypne všechny rozpadové kanály bosonu Z (PDG 23),
+        // poté znovu povolí kanály, které obsahují miony (PDG 13).
+        // Odkomentuj oba řádky pouze tehdy, když chceš takto omezit
+        // rozpady Z; nedává to smysl pro obecnou SoftQCD konfiguraci.
+        //
+        // pythia.readString("23:onMode = off");
+        // pythia.readString("23:onIfAny = 13");
+        //
+        // Obecně: '<PDG>:mayDecay = off' zakáže danému druhu částic
+        // rozpad v PYTHIA. Příklad pro neutrální pion (PDG 111):
+        // pythia.readString("111:mayDecay = off");
+        // Pozor: částici pak může později rozpadnout Geant4, pokud ji
+        // Geant4 převezme jako primární částici a jeho fyzika to dovolí.
+
+        // ====================================================
+        // 4) SPRŠKY, HADRONIZACE A NÁSLEDNÉ ROZPADY
+        // ====================================================
+        // Tyto přepínače mají běžně hodnotu on. Ponecháváme je
+        // zakomentované, aby výchozí konfiguraci neměnily.
+        //
+        // Počáteční sprška (ISR): záření vycházející ze vstupních částic.
+        // pythia.readString("PartonLevel:ISR = off");
+        //
+        // Konečná sprška (FSR): záření vycházející z konečných partonů.
+        // pythia.readString("PartonLevel:FSR = off");
+        //
+        // MPI: více partonových interakcí v jedné hadronové srážce.
+        // pythia.readString("PartonLevel:MPI = off");
+        //
+        // Hadronizace: převod barevných partonů na hadrony.
+        // Vypnutí je vhodné zejména pro speciální testy/debugování;
+        // pro obvyklé úplné události jej nech zapnutý.
+        // pythia.readString("HadronLevel:Hadronize = off");
+        //
+        // Následné rozpady částic v PYTHIA:
+        // pythia.readString("HadronLevel:Decay = off");
+        //
+        // Nepřepínej bez důvodu celý HadronLevel na off: zastaví se
+        // tím běžné dokončení události na hadronové úrovni.
+
+        // ====================================================
+        // 5) NÁHODNÉ SEMÍNKO (OPAKOVATELNOST SIMULACE)
+        // ====================================================
+        // PYTHIA používá generátor pseudonáhodných čísel.
+        // Pokud chceš opakovat stejnou posloupnost náhodných voleb,
+        // zapni pevné semínko. Změnou hodnoty dostaneš jinou posloupnost.
+        // Povolený vlastní rozsah je 1 až 900 000 000.
+        // Výchozí nastavení necháváme beze změny.
+        //
+        // pythia.readString("Random:setSeed = on");
+        // pythia.readString("Random:seed = 123456789");
+        // Hodnota Random:seed = 0 znamená semínko založené na čase.
+
+        // ====================================================
+        // 6) VÝPISY DO TERMINÁLU
+        // ====================================================
+        // Tyto volby omezují podrobné výpisy pro každou událost.
+        // Neovlivňují vlastní fyzikální generování.
+        //
+        // Vypíše změněné hodnoty nastavení při inicializaci: ne.
+        pythia.readString("Init:showChangedSettings = off");
+        // Vypíše změněné údaje o částicích při inicializaci: ne.
+        pythia.readString("Init:showChangedParticleData = off");
+        // Počet výpisů informačního bloku události: 0 = žádný.
+        pythia.readString("Next:numberShowInfo = 0");
+        // Počet výpisů tvrdého procesu: 0 = žádný.
+        pythia.readString("Next:numberShowProcess = 0");
+        // Počet výpisů úplného záznamu události: 0 = žádný.
+        pythia.readString("Next:numberShowEvent = 0");
+        // Pro ještě tišší výstup existuje také Print:quiet = on,
+        // ale zde ho nepoužíváme, aby zůstaly viditelné případné chyby.
+
+        // Inicializace kontroluje, zda zvolená konfigurace PYTHIA
+        // může být spuštěna. Při neplatných / nekompatibilních volbách
+        // skončí program s chybou místo pokračování s neplatným stavem.
+        if (!pythia.init()) {
+            delete gun;
+            gun = nullptr;
+            throw std::runtime_error(
+                "PYTHIA se nepodařilo inicializovat. Zkontroluj konfiguraci."
+            );
+        }
+
+        G4cout << "PYTHIA 8 inicializována." << G4endl;
+        G4cout << "Primární částice budou převáděny do Geant4." << G4endl;
+    }
+
+    ~PrimaryGenerator() override {
+        delete gun;
+    }
+
+    void GeneratePrimaries(G4Event* event) override {
+        // /run/beamOn N zavolá tuto funkci pro každou z N událostí.
+        // Jedno pythia.next() se pokusí vygenerovat jednu událost PYTHIA.
+        if (!pythia.next()) {
+            G4cerr << "PYTHIA nevygenerovala událost." << G4endl;
+            return;
+        }
+
+        auto* particleTable = G4ParticleTable::GetParticleTable();
+        G4int inserted = 0;
+
+        // Pythia event[0] je systémový záznam; proto procházíme od 1.
+        // isFinal() vybere konečné částice po sprškách, hadronizaci
+        // a rozpadech povolených výše uvedeným nastavením.
+        for (int i = 1; i < pythia.event.size(); ++i) {
+            const auto& particle = pythia.event[i];
+
+            if (!particle.isFinal()) {
+                continue;
+            }
+
+            // Převod PDG kódu PYTHIA na definici částice v Geant4.
+            // Pokud ji Geant4 nezná, částici bezpečně přeskočíme.
+            auto* definition =
+                particleTable->FindParticle(particle.id());
+
+            if (definition == nullptr) {
+                continue;
+            }
+
+            // PYTHIA udává hybnosti v GeV; Geant4 používá jednotkový systém.
+            const G4ThreeVector momentum(
+                particle.px() * GeV,
+                particle.py() * GeV,
+                particle.pz() * GeV
+            );
+
+            const G4double p = momentum.mag();
+            if (p <= 1.e-12 * GeV) {
+                continue; // směr nulové hybnosti nelze normalizovat
+            }
+
+            // PYTHIA poskytuje celkovou energii implicitně přes hybnost
+            // a hmotnost. ParticleGun::SetParticleEnergy vyžaduje
+            // kinetickou energii: E_kin = sqrt(p^2 + m^2) - m.
+            const G4double mass = particle.m() * GeV;
+            const G4double totalEnergy =
+                std::sqrt(p * p + mass * mass);
+            const G4double kineticEnergy =
+                std::max(0.0, totalEnergy - mass);
+
+            // Každé volání GeneratePrimaryVertex vloží do události
+            // jeden primární vertex s jednou počáteční částicí.
+            gun->SetParticleDefinition(definition);
+            gun->SetParticlePosition(G4ThreeVector(0., 0., 0.));
+            gun->SetParticleMomentumDirection(momentum.unit());
+            gun->SetParticleEnergy(kineticEnergy);
+            gun->GeneratePrimaryVertex(event);
+            ++inserted;
+        }
+
+        G4cout << "Událost PYTHIA -> Geant4: "
+               << inserted << " primárních částic" << G4endl;
+    }
+};
+
+// ============================================================
+// REGISTRACE GENERÁTORU V GEANT4
+// ============================================================
+
+class ActionInitialization : public G4VUserActionInitialization {
+public:
+    void Build() const override {
+        // Bez tohoto řádku by /run/beamOn nemělo definovaný zdroj částic.
+        SetUserAction(new PrimaryGenerator());
+    }
+};
+
+// ============================================================
+// HLAVNÍ PROGRAM
+// ============================================================
+
+int main(int argc, char** argv) {
+    auto* runManager = new G4RunManager();
+
+    // Geometrie, fyzikální seznam a uživatelské akce.
+    runManager->SetUserInitialization(new Detector());
+    runManager->SetUserInitialization(new FTFP_BERT());
+    runManager->SetUserInitialization(new ActionInitialization());
+    runManager->Initialize();
+
+    // Inicializace vizualizace a ovladače uživatelských příkazů.
+    auto* visManager = new G4VisExecutive();
+    visManager->Initialize();
+    auto* uiManager = G4UImanager::GetUIpointer();
+
+    // USER CODE BEGIN
+    // Sem vlož vlastní inicializaci a nastavení simulace.
+    // Zde se nachází hlavní program, nikoliv konfigurace PYTHIA.
+    // USER CODE END
+
+    if (argc > 1) {
+        // Pokud je při spuštění předáno jméno makra, spusť právě toto makro.
+        uiManager->ApplyCommand(
+            G4String("/control/execute ") + argv[1]
+        );
+    } else {
+        // Jinak otevři interaktivní Geant4 relaci a výchozí vis.mac.
+        auto* ui = new G4UIExecutive(argc, argv);
+        uiManager->ApplyCommand("/control/execute macros/vis.mac");
+        ui->SessionStart();
+        delete ui;
+    }
+
+    delete visManager;
+    delete runManager;
+    return 0;
+}

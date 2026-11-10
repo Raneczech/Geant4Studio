@@ -1,0 +1,50 @@
+# ============================================================
+# Geant4Studio - vizualizace částic
+# ============================================================
+
+# Otevři OpenGL okno
+/vis/open OGL 1000x800-0+0
+
+# Zobraz geometrii detektoru
+/vis/drawVolume
+
+# Pohled na střed detektoru
+/vis/viewer/set/viewpointThetaPhi 70 30
+/vis/viewer/zoom 1.2
+
+# Hladké trajektorie a rozšířené informace o částicích
+/vis/scene/add/trajectories smooth rich
+
+# GEANT4STUDIO TRAJECTORY COLORS BEGIN
+# Barvy trajektorií podle názvu částice
+/vis/modeling/trajectories/create/drawByParticleID
+/vis/modeling/trajectories/drawByParticleID-0/set gamma yellow
+/vis/modeling/trajectories/drawByParticleID-0/set neutron green
+/vis/modeling/trajectories/drawByParticleID-0/set pi0 violet
+/vis/modeling/trajectories/drawByParticleID-0/set e- blue
+/vis/modeling/trajectories/drawByParticleID-0/set e+ red
+/vis/modeling/trajectories/drawByParticleID-0/set proton cyan
+/vis/modeling/trajectories/drawByParticleID-0/set pi+ magenta
+/vis/modeling/trajectories/drawByParticleID-0/set pi- magenta
+/vis/modeling/trajectories/drawByParticleID-0/set kaon+ orange
+/vis/modeling/trajectories/drawByParticleID-0/set kaon- orange
+/vis/modeling/trajectories/drawByParticleID-0/set kaon0 violet
+/vis/modeling/trajectories/drawByParticleID-0/set anti_kaon0 violet
+/vis/modeling/trajectories/drawByParticleID-0/set kaon0S violet
+/vis/modeling/trajectories/drawByParticleID-0/set kaon0L violet
+/vis/modeling/trajectories/drawByParticleID-0/set mu- cyan
+/vis/modeling/trajectories/drawByParticleID-0/set mu+ cyan
+# GEANT4STUDIO TRAJECTORY COLORS END
+
+# Zobraz trajektorie ze všech událostí v jednom pohledu
+/vis/scene/endOfEventAction accumulate
+
+# Automatické obnovování okna
+/vis/viewer/set/autoRefresh true
+/vis/verbose warnings
+
+# Obnov pohled
+/vis/viewer/flush
+
+# Zobraz osy
+/vis/scene/add/axes 0 0 0 1000 mm white
